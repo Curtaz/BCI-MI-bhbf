@@ -1,5 +1,4 @@
 import os
-from datetime import datetime
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -115,13 +114,14 @@ def main(cfg=None):
     output_dir = cfg.output_path
     log_dir = cfg.log_path
     fs = cfg.sample_frequency
-    windowShift = int(cfg.win_size_s * fs)
-    windowLen = int(cfg.sample_frequency * fs)
+    windowShift = int(cfg.win_shift_s * fs)
+    windowLen = int(cfg.win_size_s * fs)
     nChannels = cfg.num_channels
     normalize = cfg.normalize
     label_map = cfg.label_map
     label_names = cfg.label_names
 
+    pre_trained_model = cfg.train.pre_trained_model
     device = cfg.train.device
     metric = cfg.train.metric
     learning_rate = cfg.train.lr
@@ -173,11 +173,10 @@ def main(cfg=None):
         labels = []
 
         # Select trials of interest only
-        mask = (trial_labels==Event.BOTH_FEET)|(trial_labels==Event.BOTH_HANDS)
+        mask = (trial_labels==Event.REST)|(trial_labels==Event.BOTH_FEET)|(trial_labels==Event.BOTH_HANDS) #TODO filter based on custom selection
         trial_starts = trial_starts[mask]
         trial_ends = trial_ends[mask]
         trial_labels = trial_labels[mask]
-
         # Compute trial indices
         nTrialsTot = 0
         for i in range(len(trial_starts)):
@@ -189,7 +188,7 @@ def main(cfg=None):
                 trial_idx.append((t_start,t_start+windowLen))
                 nTrialsTot +=1
                 t_start += windowShift
-            labels.append(label_map[trial_labels[i]]) ## FIXME per pigrizia non faccio mappe
+            labels.append(label_map[int(trial_labels[i])])
             indices.append(trial_idx)
         num_features = 1
         windows[split] = np.zeros((nTrialsTot,nChannels,num_features,windowLen),dtype = np.float32)
@@ -218,7 +217,6 @@ def main(cfg=None):
     train_set = MyDataset(windows['train'],winlabels['train'])
     val_set = MyDataset(windows['val'],winlabels['val'])
     test_set = MyDataset(windows['test'],winlabels['test'])
-
     # Create samplers
     episodic_sampler = EpisodicSampler(train_set,
                                        n_support=n_support,
@@ -266,6 +264,8 @@ def main(cfg=None):
                 F2 = f2,)
 
     model = PrototypicalModel(net,metric).to('cuda')
+    if pre_trained_model is not None:
+        model.load_state_dict(torch.load(pre_trained_model))
 
     summary(model)
 
@@ -353,6 +353,7 @@ def main(cfg=None):
     val_probs = clf.predict_proba(val_embeddings)
     test_probs = clf.predict_proba(test_embeddings)
 
+    plt.figure()
     sns.set_style('whitegrid')
     h_mu,h_std = train_probs[train_labels==0][:,0].mean(),train_probs[train_labels==0][:,0].std()
     f_mu,f_std = 1-train_probs[train_labels==1][:,1].mean(),train_probs[train_labels==1][:,1].std()
@@ -360,7 +361,7 @@ def main(cfg=None):
     sns.kdeplot(np.random.normal(h_mu,h_std,1000))
     sns.kdeplot(np.random.normal(f_mu,f_std,1000))
     plt.legend(['Both Hands','Both Feet'])
-    plt.savefig(os.path.join(output_dir,"kernels.py"))
+    plt.savefig(os.path.join(output_dir,"kernels.png"))
 
     print("End.")
 

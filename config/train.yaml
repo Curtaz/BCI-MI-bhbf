@@ -3,21 +3,29 @@ random_seed: 42 # Set it to None to implement fully random behaviour #TODO IMPLE
 hydra:
   run:
     dir: ${log_path}
+ 
+subj: cBCI_s4 # d6
 
 ## Data Processing options
-data_path: "C:/Users/tomma/Documents/Uni/PhD/data/cBCI/sbj4_tr_rigorous/preprocessed"
-output_path: "C:/Users/tomma/Documents/Uni/PhD/code/BCI-MI-bhbf/model/sbj4_tr_rigorous_${now:%Y%m%d_%H%M%S}"
-log_path: "C:/Users/tomma/Documents/Uni/PhD/code/BCI-MI-bhbf/logs/sbj4_tr_rigorous_${now:%Y%m%d_%H%M%S}"
+# data_path: "/home/palatella/workspace/Neurorobotics-MI-data/${subj}/preprocessed"
+data_path: "/home/palatella/workspace/cBCI-data/sbj4_tr/preprocessed"
+output_path: "/home/palatella/workspace//BCI-MI-bhbf/model/${subj}_${now:%Y%m%d_%H%M%S}"
+log_path: "/home/palatella/workspace/BCI-MI-bhbf/logs/${subj}_${now:%Y%m%d_%H%M%S}"
 sample_frequency: 512
 win_size_s: 1
 win_shift_s: 0.0625
-num_channels: 32
+num_channels: 32 #16
 label_map:
-  780: 0 # BOTH_HANDS
-  781: 1 # BOTH_FEET
+  773: 0 # BOTH_HANDS
+  771: 1 # BOTH_FEET
+  783: 2 # REST
 label_names:
   0: "Both Hands" 
-  1: "Both Feets" # Optional mapping (after dropping unwanted labels)
+  1: "Both Feets" 
+  2: "Rest" 
+# label_names:
+#   0: "Non-rest" 
+#   1: "Rest"  
 normalize: "zscore" # Data normalization applied at the end of the processing. Available options are "zscore", None
 
 ## Model options
@@ -40,12 +48,13 @@ EEGNET:
 
 ## training options
 train:
+  pre_trained_model: /home/palatella/workspace/BCI-MI-bhbf/model/cBCI_s4_20240216_164403/model.pt #null
   metric: cosine # one of 'cosine', 'euclidean'
   lr: 0.01
   es_patience: 5
   es_min_delta: 0.0001
 
-  num_epochs: 50
+  num_epochs: 6
   eval_batch_size: 128
 
   n_support: 50

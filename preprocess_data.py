@@ -8,7 +8,7 @@ from neurorobotics_dl.utils import fix_mat
 from scipy.io import loadmat,savemat
 from scipy.signal import butter, lfilter
 
-DATA_PATH = r"C:\Users\tomma\Documents\Uni\PhD\data\d6_GDF"
+DATA_PATH = r"C:\Users\tomma\Documents\Uni\PhD\data\d6"
 
 OUT_PATH = os.path.join(DATA_PATH,"preprocessed")
 LAP_PATH = r"C:\Users\tomma\Documents\Uni\PhD\code\BCI-MI-bhbf\config\laplacian16.mat"
@@ -112,12 +112,12 @@ def check_sanity(eeg,header):
     if len(event_pos) != len(event_type):
         return False
 
-    if sum(event_type == Event.START) != (sum(event_type == Event.HIT) +
+    if sum(event_type == Event.CONT_FEEDBACK) != (sum(event_type == Event.HIT) +
                                           sum(event_type == Event.MISS) +
                                           sum(event_type == Event.TIMEOUT)):
         return False
 
-    start_times = event_pos[event_type == Event.START]
+    start_times = event_pos[event_type == Event.CONT_FEEDBACK]
     end_times = event_pos[(event_type == Event.HIT) |
                          (event_type == Event.MISS) |
                          (event_type == Event.TIMEOUT)]
