@@ -173,7 +173,7 @@ def main(cfg=None):
         labels = []
 
         # Select trials of interest only
-        mask = (trial_labels==Event.REST)|(trial_labels==Event.BOTH_FEET)|(trial_labels==Event.BOTH_HANDS) #TODO filter based on custom selection
+        mask = (trial_labels==Event.BOTH_FEET)|(trial_labels==Event.BOTH_HANDS) #TODO filter based on custom selection
         trial_starts = trial_starts[mask]
         trial_ends = trial_ends[mask]
         trial_labels = trial_labels[mask]
