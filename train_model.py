@@ -1,19 +1,16 @@
 import os
+import random
 
-import matplotlib.pyplot as plt
 import numpy as np
-import seaborn as sns
 import torch
-import torch.nn.functional as F
 import hydra
 
 from joblib import dump
 from scipy.io import loadmat
 from sklearn.discriminant_analysis import QuadraticDiscriminantAnalysis
-from torch.optim import Adam
-from torch.optim.lr_scheduler import LinearLR
 from torch.utils.data import Dataset
 from umap import UMAP
+from omegaconf import OmegaConf
 
 from neurorobotics_dl.events import Event
 from neurorobotics_dl.metric_learning import (PrototypicalModel,
@@ -21,8 +18,20 @@ from neurorobotics_dl.metric_learning import (PrototypicalModel,
 from neurorobotics_dl.metric_learning.sampler import (BaseSampler,
                                                       EpisodicSampler)
 from neurorobotics_dl.metric_learning.visualization import compare_embeddings
-from neurorobotics_dl.models import EEGNet
-from neurorobotics_dl.utils import fix_mat, summary
+from neurorobotics_dl.utils import fix_mat, summary,write_to_yaml,get_class
+
+
+def set_reproducibility(seed):
+  random.seed(seed)
+  np.random.seed(seed)
+  torch.manual_seed(seed)
+  torch.use_deterministic_algorithms(True)
+  torch.backends.cudnn.deterministic = True
+  torch.backends.cudnn.benchmark = False
+
+  os.environ['CUBLAS_WORKSPACE_CONFIG']=':16:8'
+
+"""__________________________________________________UTILITIES________________________________________________"""
 
 class MyDataset(Dataset):
     def __init__(self,X,y):
@@ -36,69 +45,6 @@ class MyDataset(Dataset):
     def __len__(self):
         return len(self.X)
 
-"""________________________________________(EDITABLE) EXPERIMENT OPTIONS______________________________________"""
-
-# RANDOM_SEED = 42 # Set it to None to implement fully random behaviour #TODO IMPLEMENT THIS COME ON!
-
-# ## Data Processing options
-# now = datetime.now().strftime('%Y%m%d_%H%M%S')
-
-# DATA_PATH = f'C:/Users/tomma/Documents/Uni/PhD/data/cBCI/sbj4_tr_rigorous/preprocessed'
-# OUTPUT_PATH = f'C:/Users/tomma/Documents/Uni/PhD/code/BCI-MI-bhbf/model/sbj4_tr_rigorous_{now}'
-# LOG_PATH = f'C:/Users/tomma/Documents/Uni/PhD/code/BCI-MI-bhbf/logs/sbj4_tr_rigorous_{now}'
-
-# SAMPLE_FREQUENCY = 512
-# WIN_SIZE_S = 1
-# WIN_SHIFT_S = 0.0625
-
-# LABEL_MAP = { 0:'Both Hands',1:'Both Feets'} # Optional mapping (after dropping unwanted labels)
-
-# NORMALIZE = 'zscore' # Data normalization applied at the end of the processing. Available options are 'zscore', None
-
-# ## Model options
-
-# DEVICE = 'cuda'
-
-# # TGCN Params
-# GCN_HIDDEN_DIMS = [128]
-# GCN_OUTPUT_DIM = 16
-# GCN_ACTIVATION = F.leaky_relu
-# GRU_HIDDEN_UNITS = 128
-# GCN_DROPOUT = 0.5
-# GRU_DROPOUT = 0.3
-
-# # EEGNet Params
-# CONV_DROPOUT = 0.5
-# F1 = 8
-# D = 2
-# F2 = 16
-# EMBEDDING_DIM = 32
-
-# ## Training options
-# METRIC = 'cosine'
-# LR = 1e-2
-# ES_PATIENCE = 5
-# ES_MIN_DELTA = 1e-4
-
-# NUM_EPOCHS = 50
-# EVAL_BATCH_SIZE = 128
-
-# N_SUPPORT = 50
-# N_QUERY = 60
-# N_EPISODES = 500
-# MAX_GRAD_NORM = 1
-# NUM_CLASSES = 2
-
-# LOG_INTERVAL = 1
-
-# NUM_CHANNELS = 32
-# OPTIMIZER = Adam
-# OPTIMIZER_OPTIONS = {"lr":LR}
-# SCHEDULER = LinearLR
-# SCHEDULER_OPTIONS = {'start_factor':1,'end_factor':LR*1e-2,'total_iters':NUM_EPOCHS}
-
-# USE_WANDB = False
-
 def compute_distances(centroids,embeddings,metric):
     if metric == 'euclidean':
         _dist = [np.sum((embeddings - centroids[i])**2, dim=1) for i in range(centroids.shape[0])]
@@ -106,10 +52,12 @@ def compute_distances(centroids,embeddings,metric):
         _dist = [1-np.dot(embeddings, centroids[i])/(np.linalg.norm(embeddings)*np.linalg.norm(centroids[i]))for i in range(centroids.shape[0])]
     dist = np.stack(_dist,axis=1)
     return dist
-
-@hydra.main(version_base="1.2",config_path="config", config_name="train")
+   
+"""____________________________________________________MAIN___________________________________________________"""
+@hydra.main(version_base="1.2",config_path="config/model_training", config_name="train")
 def main(cfg=None):
 
+    random_seed = cfg.random_seed        
     data_path = cfg.data_path
     output_dir = cfg.output_path
     log_dir = cfg.log_path
@@ -120,11 +68,11 @@ def main(cfg=None):
     normalize = cfg.normalize
     label_map = cfg.label_map
     label_names = cfg.label_names
+    classes = cfg.classes
 
     pre_trained_model = cfg.train.pre_trained_model
     device = cfg.train.device
     metric = cfg.train.metric
-    learning_rate = cfg.train.lr
     num_epochs = cfg.train.num_epochs
     n_support = cfg.train.n_support
     n_query = cfg.train.n_query
@@ -137,21 +85,28 @@ def main(cfg=None):
     log_interval = cfg.train.log_interval
     use_wandb = cfg.train.use_wandb
 
-    embedding_dim = cfg.EEGNET.embedding_dim
-    dropout = cfg.EEGNET.conv_dropout
-    f1 = cfg.EEGNET.f1
-    d = cfg.EEGNET.d
-    f2 = cfg.EEGNET.f2
+    if random_seed is not None:
+        set_reproducibility(random_seed)
+
+    model_cl = get_class(cfg.model.classname)
+    model_options = cfg.model.options
+
+    optim_cl = get_class(cfg.train.optimizer.classname)
+    optimizer_options = cfg.train.optimizer.options
+
+    lr_scheduler_cl = get_class(cfg.train.scheduler.classname)
+    lr_scheduler_options = cfg.train.scheduler.options
 
     """________________________________________________PREPARE DATA_______________________________________________"""
     windows = dict()
     winlabels = dict()
+    filenames = dict()
 
+    print("Preparing data")
     for split in ['train','val','test']:
-
         subj=loadmat(os.path.join(data_path,f'dataset_{split}.mat'))['subj']
         subj = fix_mat(subj) # fix errors while parsing.mat files
-
+        filenames[split] = subj['filenames'].tolist()
         eeg = np.expand_dims(subj['eeg'].T,1)
         triggers = subj['triggers']
         triggers['pos'] = triggers['pos'].astype(int)
@@ -173,7 +128,9 @@ def main(cfg=None):
         labels = []
 
         # Select trials of interest only
-        mask = (trial_labels==Event.BOTH_FEET)|(trial_labels==Event.BOTH_HANDS) #TODO filter based on custom selection
+        mask = np.zeros(len(trial_labels),dtype='bool')
+        for cl in classes:
+            mask = mask|(trial_labels==cl)   
         trial_starts = trial_starts[mask]
         trial_ends = trial_ends[mask]
         trial_labels = trial_labels[mask]
@@ -201,7 +158,12 @@ def main(cfg=None):
                 winlabels[split][seq] = labels[i]
                 seq+=1
 
+        print(f"{split.capitalize()}: number of samples:",len(windows[split]))
+        for label,name in label_names.items():
+            print(f"\t{name}: {(winlabels[split]==label).sum()}")
+
     # Apply normalization
+    print("Applying normalization:",normalize)
     if normalize is not None:
         if normalize=='zscore':
             mu = windows['train'].mean(axis=(0,3),keepdims=True)
@@ -210,9 +172,12 @@ def main(cfg=None):
             windows['train'] = (windows['train']-mu)/sigma
             windows['val'] = (windows['val']-mu)/sigma
             windows['test'] = (windows['test']-mu)/sigma
-        else:
-            mu,sigma = 0,1
+        else: 
+            raise ValueError(f"Normalization type {normalize} not supported. Supported types are 'zscore',None")
+    else:
+        mu,sigma = 0,1
 
+    print("\nCreating samplers")
     # Wrap datasets in a custom object
     train_set = MyDataset(windows['train'],winlabels['train'])
     val_set = MyDataset(windows['val'],winlabels['val'])
@@ -227,54 +192,29 @@ def main(cfg=None):
     val_sampler = BaseSampler(val_set, batch_size=eval_batch_size)
     test_sampler = BaseSampler(test_set, shuffle=False, batch_size=eval_batch_size)
 
-    """________________________________________________TRAIN MODEL________________________________________________"""
-
-    ## Create model	
-
-    # T-GCN
-    # nChannels = 16
-    # gcn_input_dim = 1
-    # gcn_hidden_dims = GCN_HIDDEN_DIMS
-    # gcn_output_dim = GCN_OUTPUT_DIM
-    # gcn_activation = GCN_ACTIVATION
-    # gru_hidden_units = GRU_HIDDEN_UNITS
-    # gcn_dropout = GRU_DROPOUT
-    # gru_dropout = GCN_DROPOUT
-    # num_classes = NUM_CLASSES
-
-    # net = GCN_GRU_sequence_fxdD(16,
-    #                         gcn_input_dim,
-    #                         gcn_hidden_dims,
-    #                         gcn_output_dim,
-    #                         gcn_activation,
-    #                         gru_hidden_units,
-    #                         gcn_dropout,
-    #                         gru_dropout,
-    #                         )
-
-    ## EEGNet
-
-    net = EEGNet(embedding_dim, 
-                Chans = nChannels, 
-                Samples = windowLen,
-                dropoutRate = dropout,
-                kernLength = windowLen//2,
-                F1 = f1, 
-                D = d, 
-                F2 = f2,)
-
+    """________________________________________CREATE MODEL AND OPTIMIZERS________________________________________"""
+    print("Creating model and optimizers")
+    net = model_cl(**model_options)
     model = PrototypicalModel(net,metric).to('cuda')
     if pre_trained_model is not None:
         model.load_state_dict(torch.load(pre_trained_model))
-
     summary(model)
 
+    parameters = (p for p in model.parameters() if p.requires_grad)
+    optimizer = optim_cl(parameters,**optimizer_options)
+    lr_scheduler = lr_scheduler_cl(optimizer,**lr_scheduler_options)
+
+    """___________________________________________________TRAIN___________________________________________________"""
+
+    print()
+    
     train(model,
         episodic_sampler,
         train_sampler,
         val_sampler,
         num_epochs,
-        learning_rate=learning_rate,
+        optimizer = optimizer,
+        scheduler = lr_scheduler,
         device=device,
         log_dir=log_dir,
         log_interval=log_interval,
@@ -287,20 +227,57 @@ def main(cfg=None):
 
     """__________________________________________________RESULTS__________________________________________________"""
 
+    print("\nBeginning test phase")
     model.load_state_dict(torch.load(os.path.join(output_dir,'model.pt')))
-
-    model.to('cuda')
+    model.to(device)
+    
+    print("\nComputing train embeddings")
     train_embeddings, train_labels = get_all_embeddings(train_sampler, model,device)
     train_embeddings = train_embeddings.cpu().numpy()
     train_labels = train_labels.cpu().numpy()
 
+    print("Computing val embeddings")
     val_embeddings, val_labels = get_all_embeddings(val_sampler, model,device)
     val_embeddings = val_embeddings.cpu().numpy()
     val_labels = val_labels.cpu().numpy()
 
+    print("Computing test embeddings")
     test_embeddings, test_labels = get_all_embeddings(test_sampler, model,device)
     test_embeddings = test_embeddings.cpu().numpy()
     test_labels = test_labels.cpu().numpy()
+
+    print("\nResults:")
+    ## Try different classifiers
+    print("Distance-based Classifier:")
+    centroids = (train_embeddings[train_labels==0].mean(axis=0),train_embeddings[train_labels==1].mean(axis=0))
+    centroids = np.stack(centroids)
+    train_preds = compute_distances(centroids,train_embeddings,metric).argmin(axis=1)
+    val_preds = compute_distances(centroids,val_embeddings,metric).argmin(axis=1)
+    test_preds = compute_distances(centroids,test_embeddings,metric).argmin(axis=1)
+    print(f'  Train Accuracy: {(train_preds==train_labels).mean()*100:.2f}%')
+    print(f'    Val Accuracy: {(val_preds==val_labels).mean()*100:.2f}%')
+    print(f'   Test Accuracy: {(test_preds==test_labels).mean()*100:.2f}%')
+
+    ## Try different classifiers
+    print("Quadratric Discriminant Analysis Classifier:")
+    clf = QuadraticDiscriminantAnalysis()
+    clf.fit(train_embeddings, train_labels)
+    train_preds = clf.predict(train_embeddings)
+    val_preds = clf.predict(val_embeddings)
+    test_preds = clf.predict(test_embeddings)
+    print(f'  Train Accuracy: {(train_preds==train_labels).mean()*100:.2f}%')
+    print(f'    Val Accuracy: {(val_preds==val_labels).mean()*100:.2f}%')
+    print(f'   Test Accuracy: {(test_preds==test_labels).mean()*100:.2f}%')
+
+    write_to_yaml(os.path.join(output_dir,'config.yaml'),
+                {'model': OmegaConf.to_object(cfg.model),
+                 'classes': OmegaConf.to_object(classes),
+                'label_map': OmegaConf.to_object(label_map),
+                'filenames': filenames,
+                })
+    dump(clf, os.path.join(output_dir,'qda.joblib') )
+    np.savez(os.path.join(output_dir,'mean_std.npz'),mu=mu,sigma=sigma)
+    print(f"\nModel parameters and classifier saved at {output_dir}")
 
     tr_len = len(train_embeddings)
     val_len = tr_len+len(val_embeddings)
@@ -314,54 +291,7 @@ def main(cfg=None):
                     embeddings3 = all_embeddings_umap[val_len:],
                     labels3=test_labels,label_mappings = label_names,
                     save_as = os.path.join(log_dir,"embeddings.png"))
-
-    ## Try different classifiers
-    print("\nDistance-based Classifier:")
-
-    centroids = (train_embeddings[train_labels==0].mean(axis=0),train_embeddings[train_labels==1].mean(axis=0))
-    centroids = np.stack(centroids)
-
-    train_preds = compute_distances(centroids,train_embeddings,metric).argmin(axis=1)
-    val_preds = compute_distances(centroids,val_embeddings,metric).argmin(axis=1)
-    test_preds = compute_distances(centroids,test_embeddings,metric).argmin(axis=1)
-
-    print(f'Train Accuracy: {(train_preds==train_labels).mean()*100:.2f}%')
-    print(f'  Val Accuracy: {(val_preds==val_labels).mean()*100:.2f}%')
-    print(f' Test Accuracy: {(test_preds==test_labels).mean()*100:.2f}%')
-
-    ## Try different classifiers
-    print("\nQuadratric Discriminant Analysis Classifier:")
-    clf = QuadraticDiscriminantAnalysis()
-    clf.fit(train_embeddings, train_labels)
-
-    train_preds = clf.predict(train_embeddings)
-    val_preds = clf.predict(val_embeddings)
-    test_preds = clf.predict(test_embeddings)
-    print(f'Train Accuracy: {(train_preds==train_labels).mean()*100:.2f}%')
-    print(f'  Val Accuracy: {(val_preds==val_labels).mean()*100:.2f}%')
-    print(f' Test Accuracy: {(test_preds==test_labels).mean()*100:.2f}%')
-
-    dump(clf, os.path.join(output_dir,'qda.joblib') )
-    np.savez(os.path.join(output_dir,'mean_std.npz'),mu=mu,sigma=sigma)
-
-    print("Computing kernels")
-    train_probs = clf.predict_proba(train_embeddings)
-    val_probs = clf.predict_proba(val_embeddings)
-    test_probs = clf.predict_proba(test_embeddings)
-
-    train_probs = clf.predict_proba(train_embeddings)
-    val_probs = clf.predict_proba(val_embeddings)
-    test_probs = clf.predict_proba(test_embeddings)
-
-    plt.figure()
-    sns.set_style('whitegrid')
-    h_mu,h_std = train_probs[train_labels==0][:,0].mean(),train_probs[train_labels==0][:,0].std()
-    f_mu,f_std = 1-train_probs[train_labels==1][:,1].mean(),train_probs[train_labels==1][:,1].std()
-
-    sns.kdeplot(np.random.normal(h_mu,h_std,1000))
-    sns.kdeplot(np.random.normal(f_mu,f_std,1000))
-    plt.legend(['Both Hands','Both Feet'])
-    plt.savefig(os.path.join(output_dir,"kernels.png"))
+    print(f'Feature map saved at {os.path.join(log_dir,"embeddings.png")}')
 
     print("End.")
 

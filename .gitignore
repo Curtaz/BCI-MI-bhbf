@@ -154,3 +154,5 @@ cython_debug/
 # Saved models and logs
 model
 logs
+config
+notebooks

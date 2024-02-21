@@ -17,15 +17,15 @@ LAP_PATH = "/home/palatella/workspace/BCI-MI-bhbf/config/laplacian16.mat"
 # LAP_PATH = r"C:\Users\tomma\Documents\Uni\PhD\code\BCI-MI-bhbf\config\lapmask_antneuro_32.mat"
 """
 
-DATA_PATH = r"C:\Users\tomma\Documents\Uni\PhD\data\d6"
+DATA_PATH = r"C:\Users\tomma\Documents\Uni\PhD\data\g3"
 
 OUT_PATH = os.path.join(DATA_PATH,"preprocessed")
 LAP_PATH = r"C:\Users\tomma\Documents\Uni\PhD\code\BCI-MI-bhbf\config\laplacian16.mat"
-# LAP_PATH = r"C:\Users\tomma\Documents\Uni\PhD\code\BCI-MI-bhbf\config\lapmask_antneuro_32.mat"
+
+NUM_CHANNELS = 16
 FILT_ORDER = 2
 FC_H = 2
 FC_L = 40
-NUM_CHANNELS = 16
 T_SHIFT = 0.0625
 T_SIZE = 1
 
@@ -69,6 +69,7 @@ def main():
 
             for file in filenames[split]:
                 print(file)
+                # Read data, setup configuration
                 file_format = file.split('.')[-1]
                 if file_format == "gdf":
                     t_eeg,t_header = read_gdf(file)
@@ -76,11 +77,10 @@ def main():
                     t_eeg,t_header = read_mat(file)
 
                 if check_sanity(t_eeg, t_header):
-                    # Read data, setup configuration
                     events = t_header['EVENT']
                     fs = t_header['SampleRate']
 
-                    # Preprocessing steps
+                    ## Preprocessing steps
                     # Apply Laplacian spatial filter
                     t_eeg = np.dot(t_eeg[:, :NUM_CHANNELS], lap)
 
@@ -102,12 +102,6 @@ def main():
                     print("Bad format, corrupt file or whatever, skipping..")
 
             if dim_tot > 0:
-                # EEG = np.full((dim_tot, NUM_CHANNELS), np.nan)
-                # pos = 0
-                # for i in range(len(eegs)):
-                #     t_EEG = eegs[i]
-                #     EEG[pos:(pos + len(t_EEG)), :] = t_EEG
-                #     pos += len(t_EEG)
                 EEG = np.concatenate(eegs)
                 print(f"\nTotal number of trials: {np.sum(np.array(event_type) == Event.START)}")
                 print(f" - Both feet: {np.sum(np.array(event_type) == Event.BOTH_FEET)}")
@@ -117,7 +111,9 @@ def main():
 
                 subj = {'eeg': EEG, 
                         'triggers': {'pos': event_pos, 'type': event_type},
-                        'session_delims': session_delims}
+                        'session_delims': session_delims,
+                        'filenames': filenames[split]
+                        }
                 savemat(os.path.join(OUT_PATH, f"dataset_{split}.mat"), {'subj': subj})
 
 def check_sanity(eeg,header):
