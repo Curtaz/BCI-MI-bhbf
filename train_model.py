@@ -62,14 +62,14 @@ def main(cfg=None):
     output_dir = cfg.output_path
     log_dir = cfg.log_path
     fs = cfg.sample_frequency
-    windowShift = int(cfg.win_shift_s * fs)
-    windowLen = int(cfg.win_size_s * fs)
-    nChannels = cfg.num_channels
+    windowShift = cfg.win_shift
+    windowLen = cfg.win_size
     normalize = cfg.normalize
     label_map = cfg.label_map
     label_names = cfg.label_names
     classes = cfg.classes
-
+    keep_channels = cfg.keep_channels
+    channels = cfg.channels
     pre_trained_model = cfg.train.pre_trained_model
     device = cfg.train.device
     metric = cfg.train.metric
@@ -86,7 +86,16 @@ def main(cfg=None):
     use_wandb = cfg.train.use_wandb
 
     if random_seed is not None:
+        print("Enabling reproducibility. Setting random seed:",random_seed)
         set_reproducibility(random_seed)
+
+    if keep_channels is not None:
+        print("Keeping channels:",keep_channels)
+        to_keep = [channels.index(ch) for ch in keep_channels]
+        nChannels = len(to_keep)
+    else:
+        to_keep = np.arange(len(channels))
+        nChannels = len(to_keep)
 
     model_cl = get_class(cfg.model.classname)
     model_options = cfg.model.options
@@ -107,7 +116,7 @@ def main(cfg=None):
         subj=loadmat(os.path.join(data_path,f'dataset_{split}.mat'))['subj']
         subj = fix_mat(subj) # fix errors while parsing.mat files
         filenames[split] = subj['filenames'].tolist()
-        eeg = np.expand_dims(subj['eeg'].T,1)
+        eeg = np.expand_dims(subj['eeg'].T,1)[to_keep,:,:]
         triggers = subj['triggers']
         triggers['pos'] = triggers['pos'].astype(int)
         triggers['type'] = triggers['type'].astype(int)
@@ -271,9 +280,10 @@ def main(cfg=None):
 
     write_to_yaml(os.path.join(output_dir,'config.yaml'),
                 {'model': OmegaConf.to_object(cfg.model),
+                 'random_seed': random_seed,
                  'classes': OmegaConf.to_object(classes),
-                'label_map': OmegaConf.to_object(label_map),
-                'filenames': filenames,
+                 'label_map': OmegaConf.to_object(label_map),
+                 'filenames': filenames,              
                 })
     dump(clf, os.path.join(output_dir,'qda.joblib') )
     np.savez(os.path.join(output_dir,'mean_std.npz'),mu=mu,sigma=sigma)
@@ -297,5 +307,3 @@ def main(cfg=None):
 
 if __name__ == '__main__':
     main()
-
-
